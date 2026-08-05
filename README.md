@@ -48,12 +48,36 @@ dotnet build CS2-CSkins-QR.csproj
 ```json
 {
   "WebUrl": "https://your-skin-service.com",
-  "Version": 1
+  "ApiKey": "your-game-server-api-key",
+  "Version": 2
 }
 ```
 
 **配置说明：**
 - `WebUrl`: 皮肤更换服务的URL地址
+- `ApiKey`: 后端分配给当前游戏服务器的 API Key
+
+### 4. 后端接口
+
+玩家执行命令时，插件会请求：
+
+```http
+GET /?qr={SteamID64}
+Authorization: Bearer {ApiKey}
+```
+
+后端应创建一个短期、一次性的二维码登录会话，并返回：
+
+```json
+{
+  "success": true,
+  "qr_url": "https://your-skin-service.com/images_qr/session-id.png",
+  "redirect_url": null,
+  "is_new": true
+}
+```
+
+`qr_url` 必须是玩家客户端可以访问的绝对 URL。二维码内容应只包含一次性 token，后端通过 token 查询绑定的 SteamID64，消费 token 后再创建网页登录会话。
 
 ## 使用方法
 

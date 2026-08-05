@@ -1,3 +1,5 @@
+using System.Net.Http.Headers;
+
 namespace HttpUtils;
 
 public static class Utils  // 改为 public static
@@ -12,11 +14,12 @@ public static class Utils  // 改为 public static
     /// </summary>
     /// <param name="url">请求的 URL</param>
     /// <returns>响应内容的字符串（JSON/XML/Plain Text）</returns>
-    public static async Task<string?> HttpGetAsync(string url)
+    public static async Task<string?> HttpGetAsync(string url, string bearerToken)
     {
         using HttpClient client = new();
         try
         {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
             HttpResponseMessage response = await client.GetAsync(url);
             if (response.IsSuccessStatusCode)
             {

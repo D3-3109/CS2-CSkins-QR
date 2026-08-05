@@ -66,7 +66,7 @@ public class CS2_CSkins_QR : BasePlugin, IPluginConfig<CS2_CSkins_QRConfig>
             && !player.IsBot
             && player.Pawn != null
             && player.Pawn.IsValid
-            && player.Connected == PlayerConnectedState.PlayerConnected
+            && player.Connected == PlayerConnectedState.Connected
             && !player.IsHLTV;
     }
 
@@ -87,27 +87,20 @@ public class CS2_CSkins_QR : BasePlugin, IPluginConfig<CS2_CSkins_QRConfig>
                 if (!IsPlayerValid(player))
                     continue;
 
-                if (bPlayerSeeingQRImage.TryGetValue(player.SteamID, out var value))
-                {
-                    bool isShowing = value.IsShowing;
-                    if (!isShowing) continue;
-
-                    string imageUrl = value.ImageUrl;
-                    // Console.WriteLine($"[INFO] [CS2_CSkins_QR] Player {player.SteamID}: IsShowing={isShowing}, ImageUrl={imageUrl}");
-                    var buttons = player.Buttons;
-                    if (buttons.HasFlag(PlayerButtons.Attack2))
-                    {
-                        var newValue = new PlayerQRImageInfo(false, imageUrl);
-                        bool success = bPlayerSeeingQRImage.TryUpdate(player.SteamID, newValue, value);
-                        Console.WriteLine(success ? "[INFO] [CS2_CSkins_QR] 玩家关闭换肤成功" : "[ERROR] [CS2_CSkins_QR] 更新失败（可能被其他线程修改）");
-                        continue;
-                    }
-                }
-                else
+                if (!bPlayerSeeingQRImage.TryGetValue(player.SteamID, out var value) || !value.IsShowing)
                     continue;
 
-                string qrImageUrl = $"{Config.WebUrl}" + $"/images_qr/{player.SteamID}.png";
-                player.PrintToCenterHtml($"<img src='{qrImageUrl}'>");
+                string imageUrl = value.ImageUrl;
+                var buttons = player.Buttons;
+                if (buttons.HasFlag(PlayerButtons.Attack2))
+                {
+                    var newValue = new PlayerQRImageInfo(false, imageUrl);
+                    bool success = bPlayerSeeingQRImage.TryUpdate(player.SteamID, newValue, value);
+                    Console.WriteLine(success ? "[INFO] [CS2_CSkins_QR] 玩家关闭换肤成功" : "[ERROR] [CS2_CSkins_QR] 更新失败（可能被其他线程修改）");
+                    continue;
+                }
+
+                player.PrintToCenterHtml($"<img src='{imageUrl}'>");
                 player.PrintToCenter("扫码换肤, 右键退出!");
             }
         });
@@ -120,11 +113,9 @@ public class CS2_CSkins_QR : BasePlugin, IPluginConfig<CS2_CSkins_QRConfig>
         {
             try
             {
-                string? response = await Utils.HttpGetAsync(queryUrl);
+                string? response = await Utils.HttpGetAsync(queryUrl, Config.ApiKey);
                 if (response != null)
                 {
-                    // 处理响应（注意线程安全）
-                    Logger.LogInformation(response);
                     // 使用 JsonSerializer 反序列化 JSON 字符串
                     // ResponseData? 表示可能为 null
                     ResponseData? data = JsonSerializer.Deserialize<ResponseData>(response);
@@ -135,7 +126,7 @@ public class CS2_CSkins_QR : BasePlugin, IPluginConfig<CS2_CSkins_QRConfig>
                         // Console.WriteLine($"RedirectUrl: {data.RedirectUrl}");
                         // Console.WriteLine($"IsNew: {data.IsNew}");
                         // 添加或更新某个玩家的 QR 图片信息
-                        if (data.QrUrl != null) {
+                        if (data.Success && !string.IsNullOrWhiteSpace(data.QrUrl)) {
                             bPlayerSeeingQRImage.AddOrUpdate(
                                 player.SteamID,                           // ulong 类型的 Key（玩家ID）
                                 new PlayerQRImageInfo(true, data.QrUrl),   // 如果 Key 不存在，创建新对象
@@ -171,6 +162,12 @@ public class CS2_CSkins_QR : BasePlugin, IPluginConfig<CS2_CSkins_QRConfig>
         string args = command.ArgString;
         Console.WriteLine($"[INFO] [CS2_CSkins_QR] OnCSkinsCommand!");
         if (!IsPlayerValid(player)) return;
+        if (string.IsNullOrWhiteSpace(Config.ApiKey))
+        {
+            Logger.LogError("ApiKey 未配置，无法创建二维码登录会话");
+            player!.PrintToChat("[CSkins] 二维码登录尚未配置，请联系管理员。");
+            return;
+        }
         Console.WriteLine($"[INFO] [CS2_CSkins_QR] Player should see skin change QRImage!");
         string queryUrl = $"{Config.WebUrl}" + $"/?qr={player!.SteamID}";
         GetPlayerCSkinQRImageUrl(queryUrl, player);
