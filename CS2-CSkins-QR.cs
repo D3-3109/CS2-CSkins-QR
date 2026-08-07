@@ -19,8 +19,8 @@ public class CS2_CSkins_QR : BasePlugin, IPluginConfig<CS2_CSkins_QRConfig>
 {
     public override string ModuleName => "CS2_CSkins_QR";
     public override string ModuleDescription => "Change player skin by scan QR code";
-    public override string ModuleAuthor => "https://bbs.csgocn.net/";
-    public override string ModuleVersion => "0.0.1";
+    public override string ModuleAuthor => "Jasonlee";
+    public override string ModuleVersion => "1.0.0";
 
     public class PlayerQRImageInfo
     {

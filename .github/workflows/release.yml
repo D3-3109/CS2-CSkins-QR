@@ -1,0 +1,157 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build for a manual run, e.g. 1.2.3 or 1.2.3-rc.1 (tag runs use the tag itself)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Extract version
+        id: version
+        shell: pwsh
+        env:
+          MANUAL_VER: ${{ inputs.version }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $manual = $env:MANUAL_VER
+          $rx = '^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+          if ($manual -ne '') {
+            if ($manual -notmatch $rx) {
+              throw "Invalid version input '$manual' - expected X.Y.Z or vX.Y.Z (e.g. 1.2.3, 1.2.3-rc.1)"
+            }
+            $version = $manual -replace '^v', ''
+            Write-Host "Manual run - Version: $version"
+          } else {
+            if ($tag -notmatch $rx) {
+              throw "Invalid release tag '$tag' - expected vX.Y.Z (e.g. v1.2.3, v1.2.3-rc.1)"
+            }
+            $version = $tag -replace '^v', ''
+            Write-Host "Tag run - Tag: $tag  ->  Version: $version"
+          }
+          # AssemblyVersion/FileVersion only allow numeric segments
+          $av = ($version -split '[-+]')[0]
+          "version=$version"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding ascii
+          "av_version=$av"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding ascii
+
+      - name: Build
+        shell: pwsh
+        env:
+          VER: ${{ steps.version.outputs.version }}
+          AVER: ${{ steps.version.outputs.av_version }}
+        run: dotnet build CS2-CSkins-QR.csproj -c Release -p:Version="$env:VER" -p:AssemblyVersion="$env:AVER" -p:FileVersion="$env:AVER"
+
+      - name: Package
+        shell: pwsh
+        env:
+          VER: ${{ steps.version.outputs.version }}
+        run: |
+          $version = $env:VER
+          $src   = Join-Path $PWD 'bin/Release/net8.0'
+          $stage = Join-Path $PWD 'package/addons/counterstrikesharp/plugins/CS2-CSkins-QR'
+          # Minimal release artifact: the server provides CounterStrikeSharp + the .NET runtime,
+          # so we ship only the plugin's own three files.
+          $files = @('CS2-CSkins-QR.deps.json', 'CS2-CSkins-QR.dll', 'CS2-CSkins-QR.pdb')
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          foreach ($f in $files) {
+            $fp = Join-Path $src $f
+            if (-not (Test-Path -LiteralPath $fp -PathType Leaf)) {
+              throw "Missing build artifact: $f (expected in $src)"
+            }
+            Copy-Item -LiteralPath $fp -Destination $stage -Force
+          }
+          # Sanity check: staging must contain exactly the three plugin files
+          $actual = @(Get-ChildItem -LiteralPath $stage -File | ForEach-Object { $_.Name })
+          if ($actual.Count -ne $files.Count -or (Compare-Object $files $actual)) {
+            throw "Unexpected staging contents: $($actual -join ', ')"
+          }
+          $zip = "CS2-CSkins-QR-$version.zip"
+          $zipPath = Join-Path $PWD $zip
+          # Compress-Archive keeps the addons/ prefix; on Linux pwsh it writes forward slashes
+          Compress-Archive -Path (Join-Path $PWD 'package/addons') -DestinationPath $zipPath -Force -ErrorAction Stop
+          if (-not (Test-Path -LiteralPath $zipPath)) { throw "Compress-Archive failed" }
+          $sha = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
+          "$sha  $zip" | Set-Content -Path "$zipPath.sha256" -Encoding ascii
+          Write-Host "Package: $zip"
+          Get-ChildItem -LiteralPath $stage | ForEach-Object { Write-Host "  packed: $($_.Name)" }
+
+      - name: Generate release notes
+        shell: pwsh
+        env:
+          VER: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $env:VER
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $relTag = "v$version"
+          } else {
+            $relTag = $tag
+          }
+          $notes = @(
+            "## CS2-CSkins-QR $relTag",
+            "",
+            "Automated build from tag ``$relTag``.",
+            "",
+            "### Install",
+            "Extract the archive into ``addons/counterstrikesharp/plugins/CS2-CSkins-QR/`` on the CS2 server (create the folder if needed), then run ``css_plugins load CS2-CSkins-QR`` or restart the server.",
+            "",
+            "### Changes since previous tag",
+            ""
+          )
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $log = git log --oneline --no-decorate -10
+          } else {
+            $prev = git describe --tags --abbrev=0 "$tag^" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $log = git log --oneline --no-decorate "$prev..$tag"
+            } else {
+              $log = git log --oneline --no-decorate -10 $tag
+            }
+          }
+          $notes += $log
+          $notes | Set-Content -Path notes.md -Encoding utf8
+
+      - name: Create GitHub Release
+        env:
+          VER: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $env:VER
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $releaseTag = "v$version"
+          } else {
+            $releaseTag = $tag
+          }
+          $zip = "CS2-CSkins-QR-$version.zip"
+          $ghArgs = @(
+            'release', 'create', $releaseTag, $zip, "$zip.sha256",
+            '--title', "CS2-CSkins-QR $releaseTag",
+            '--notes-file', 'notes.md'
+          )
+          if ($releaseTag.Contains('-')) { $ghArgs += '--prerelease' }
+          gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
